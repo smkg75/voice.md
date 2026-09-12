@@ -1,0 +1,16 @@
+node_modules/
+
+# The setup's working directory, wherever someone points it. It holds raw mail
+# between the collection and the profile, and the skill deletes it at the end;
+# this is the second lock, in case a run stops in the middle.
+voice-setup/
+*.mbox
+samples/
+stats/
+
+# What a replay of the example downloads. The corpus is public domain and is
+# fetched again rather than stored.
+examples/person-fr/corpus/
+
+# The working file /voice:write writes into, outside any repository.
+voice-drafts/

@@ -1,0 +1,15 @@
+{
+  "description": "Normalise typography in everything the agent writes",
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/archive/hooks/typo.js pre", "timeout": 10 }] },
+      { "matcher": "mcp__.*",
+        "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/archive/hooks/typo.js pre", "timeout": 10 }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/archive/hooks/typo.js post-bash", "timeout": 10 }] }
+    ]
+  }
+}

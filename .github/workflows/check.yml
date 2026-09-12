@@ -1,0 +1,22 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # No argument: node discovers the test files itself. Passing a directory
+      # makes node treat it as a module to load, which fails.
+      - run: node --test
+      # The repository applies its own character table to itself.
+      # No profile on a runner, so the language is named. --check exits 1 on a glyph
+      # the table replaces and on a construction it only reports.
+      - run: node scripts/typo.js --check --lang en .
