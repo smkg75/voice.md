@@ -23,10 +23,10 @@ claude plugin marketplace add https://github.com/smkg75/voice.md.git
 claude plugin install voice@voice
 ```
 
-The typography command needs none of that:
+The typography command needs none of that, and no npm account either:
 
 ```bash
-npx voice.md typo --voice VOICE.md lettre.md
+npx github:smkg75/voice.md typo --voice VOICE.md lettre.md
 ```
 
 ## 🚀 First run
