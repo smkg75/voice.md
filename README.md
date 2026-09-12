@@ -47,7 +47,7 @@ About thirty minutes, most of it yours: exporting the mailbox, and reading the p
 |---|---|---|
 | `/voice:setup` | nothing | `~/.agents/VOICE.md`, measured, and the anchor line in `CLAUDE.md` |
 | `/voice:write` | `write`, `rewrite` or `force`, a register, a surface, a profile | a draft in a working file, in your voice, never sent |
-| `npx voice.md typo` | `--check`, `--fix`, `--voice`, `--lang` | what was replaced, and the sentences to rewrite |
+| `npx github:smkg75/voice.md typo` | `--check`, `--fix`, `--voice`, `--lang` | what was replaced, and the sentences to rewrite |
 
 ## ⚙️ How it works
 
