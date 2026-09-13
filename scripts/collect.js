@@ -1113,6 +1113,11 @@ const CONVERTED = new Map(
 // Unlike a .txt file, a converted one carries a charset this script chose: both
 // tools are asked for utf-8 and told so here, rather than the encoding being
 // guessed back off bytes that were just written.
+//
+// A page break is a page break. pdftotext ends every page with a form feed,
+// which the undecoded guard reads as a control character and refuses, so a
+// converted document would arrive unreadable for having more than one page. It
+// says where a page ended, which in a letter is a blank line.
 function convertToText(file, extension, report) {
   const converter = CONVERTED.get(extension);
   if (!converter) return { text: null, missing: null };
@@ -1121,7 +1126,8 @@ function convertToText(file, extension, report) {
       maxBuffer: 64 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    return { text: decodeCharset(out.toString('latin1'), 'utf-8', report), missing: null };
+    const text = decodeCharset(out.toString('latin1'), 'utf-8', report).replace(/\f\n?/g, '\n\n');
+    return { text, missing: null };
   } catch (err) {
     return { text: null, missing: err.code === 'ENOENT' ? converter.command : null };
   }

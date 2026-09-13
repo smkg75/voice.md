@@ -301,6 +301,21 @@ test('a word processor document is converted and measured', (context) => {
   assert.match(converted.text, /chantier commence lundi/);
 });
 
+test('a page break survives the conversion as a blank line, not as a refusal', (context) => {
+  // Every page of a pdf ends on a form feed, and the guard that catches bytes
+  // which did not decode reads one as a control character. A letter of two
+  // pages was arriving unreadable for having two pages.
+  const dir = sandbox();
+  const source = path.join(dir, 'deux-pages.html');
+  fs.writeFileSync(source, '<html><body><p>Madame,</p>'
+    + '<p style="page-break-after: always">Le chantier commence lundi.</p>'
+    + '<p>Les travaux durent trois semaines.</p></body></html>');
+  const converted = collect.convertToText(source, '.html', collect.decodeReport());
+  if (converted.missing) return context.skip(converted.missing + ' is not on this machine');
+  assert.strictEqual(collect.undecoded(converted.text), false);
+  assert.doesNotMatch(converted.text, /\f/);
+});
+
 test('a converter this machine lacks is named rather than the file vanishing', () => {
   const entry = collect.CONVERTED.get('.pdf');
   assert.strictEqual(entry.command, 'pdftotext');
