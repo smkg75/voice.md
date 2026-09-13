@@ -45,6 +45,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 // --- Mbox and MIME --------------------------------------------------------
 
@@ -797,14 +798,80 @@ function emptyCounts() {
   return {
     read: 0,
     kept: 0,
-    dropped: { not_from_the_user: 0, nothing_of_their_own: 0, no_body: 0, unreadable: 0 },
+    dropped: {
+      not_from_the_user: 0, nothing_of_their_own: 0, no_body: 0, unreadable: 0,
+      outside_the_window: 0, filed_twice: 0,
+    },
   };
 }
 
-// A mailbox exported from a mail client: Apple Mail exports the sent mailbox,
-// Gmail goes through Takeout, Thunderbird through ImportExportTools. The file is
-// read as bytes and each part is decoded in its own charset, so one latin1
-// message in a utf-8 mailbox still reads.
+// One message to one sample, or to the reason it was dropped. A mailbox file
+// and a directory of .emlx files hand over the same bytes and want the same work
+// done on them, so the work is written once here and the two readers below only
+// differ in how they find a message.
+function messageSample(message, context) {
+  const { me, counts, report, options, adapter, source, index } = context;
+  const { headers, body } = splitMessage(message);
+  const from = addressOf(decodeEncodedWords(headers.from));
+  if (!from || !me.has(from)) {
+    counts.dropped.not_from_the_user += 1;
+    return null;
+  }
+  const date = dateOf(headers.date);
+  // A voice measured across ten years is an average of the person's successive
+  // voices, so the caller may hold the corpus to a window. A message whose date
+  // did not parse is kept: dropping it would thin the corpus by whatever the
+  // mail client happened to write its dates in, and say nothing about it.
+  if (options.since && date && date < options.since) {
+    counts.dropped.outside_the_window += 1;
+    return null;
+  }
+  // The user did write something; the parser found no blank line under the
+  // headers and so could not tell where it started. Counting that as nothing
+  // of their own would report a whole mailbox as silent.
+  if (!body.trim()) {
+    counts.dropped.no_body += 1;
+    return null;
+  }
+
+  const before = report.refused;
+  const part = partText(message, 0, report);
+  // The bytes refused the width their own header declared, so what came back
+  // is not a message: it is counted as unreadable rather than measured.
+  if (report.refused > before || undecoded(part.text)) {
+    counts.dropped.unreadable += 1;
+    return null;
+  }
+  const stripped = stripQuoted(part.text);
+  const parted = splitSignature(stripped.text);
+  if (!wordCount(parted.body)) {
+    counts.dropped.nothing_of_their_own += 1;
+    return null;
+  }
+
+  const recipients = addressesIn(decodeEncodedWords(headers.to))
+    .concat(addressesIn(decodeEncodedWords(headers.cc)))
+    .filter((address) => !me.has(address));
+  const domain = recipients.length ? recipients[0].split('@')[1] : null;
+
+  return makeSample({
+    id: options.tag + '-' + String(index).padStart(4, '0'),
+    tag: options.tag,
+    adapter,
+    source,
+    date,
+    recipientDomain: domain,
+    extension: '',
+    body: mask(parted.body),
+    signoff: mask(parted.signoff),
+    signature: mask(parted.signature),
+  });
+}
+
+// A mailbox exported from a mail client: Gmail goes through Takeout,
+// Thunderbird through ImportExportTools, and any client at all through a single
+// file .mbox export. The file is read as bytes and each part is decoded in its
+// own charset, so one latin1 message in a utf-8 mailbox still reads.
 function collectMbox(file, options) {
   const me = new Set((options.me || []).map((address) => address.toLowerCase()));
   const counts = emptyCounts();
@@ -813,59 +880,254 @@ function collectMbox(file, options) {
 
   for (const message of streamMbox(file, options.chunkSize)) {
     counts.read += 1;
-    const { headers, body } = splitMessage(message);
-    const from = addressOf(decodeEncodedWords(headers.from));
-    if (!from || !me.has(from)) {
-      counts.dropped.not_from_the_user += 1;
-      continue;
+    const sample = messageSample(message, {
+      me, counts, report, options, adapter: 'mbox', source: path.basename(file), index: counts.kept + 1,
+    });
+    if (sample) {
+      counts.kept += 1;
+      samples.push(sample);
     }
-    // The user did write something; the parser found no blank line under the
-    // headers and so could not tell where it started. Counting that as nothing
-    // of their own would report a whole mailbox as silent.
-    if (!body.trim()) {
-      counts.dropped.no_body += 1;
-      continue;
-    }
-
-    const before = report.refused;
-    const decoded = partText(message, 0, report);
-    // The bytes refused the width their own header declared, so what came back
-    // is not a message: it is counted as unreadable rather than measured.
-    if (report.refused > before || undecoded(decoded.text)) {
-      counts.dropped.unreadable += 1;
-      continue;
-    }
-    const stripped = stripQuoted(decoded.text);
-    const parted = splitSignature(stripped.text);
-    if (!wordCount(parted.body)) {
-      counts.dropped.nothing_of_their_own += 1;
-      continue;
-    }
-
-    const recipients = addressesIn(decodeEncodedWords(headers.to))
-      .concat(addressesIn(decodeEncodedWords(headers.cc)))
-      .filter((address) => !me.has(address));
-    const domain = recipients.length ? recipients[0].split('@')[1] : null;
-
-    counts.kept += 1;
-    samples.push(makeSample({
-      id: options.tag + '-' + String(counts.kept).padStart(4, '0'),
-      tag: options.tag,
-      adapter: 'mbox',
-      source: path.basename(file),
-      date: dateOf(headers.date),
-      recipientDomain: domain,
-      extension: '',
-      body: mask(parted.body),
-      signoff: mask(parted.signoff),
-      signature: mask(parted.signature),
-    }));
   }
 
   return { counts, samples, decoding: decoded(report) };
 }
 
-const FOLDER_EXTENSIONS = new Set(['.txt', '.md', '.tex']);
+// Apple Mail keeps every message it has synchronised as a file of its own under
+// ~/Library/Mail, which is the whole point of reading it here: the mail is
+// already on this disk, in the clear, and there is nothing to export. An .emlx
+// file is one line holding the length of the message in bytes, the RFC 822
+// message itself, and a plist of Apple's own flags underneath it. The declared
+// length is where the message ends; the plist is read by nothing here.
+//
+// This path exists so that a mail account does not have to be read through an
+// API or a connector to be measured. A connector hands the messages to whatever
+// asked for them, which in an agent session is the model, and the consent this
+// collection runs under says the opposite: the scripts read the mail, on the
+// disk, and the model reads the statistics.
+const MAIL_HOME = ['Library', 'Mail'];
+
+// How much of a file is read to decide whether the user wrote it. Enough for the
+// headers of an ordinary message, including a long Received chain, and small
+// enough that the decision costs a fraction of the file on a corpus of a hundred
+// thousand of them.
+const HEAD_BYTES = 8192;
+
+// Mailboxes whose messages the user did not send, whatever the From on them
+// says. A draft is a message they did not approve, an outbox message is one that
+// has not left, and junk and trash are either not theirs or thrown away on
+// purpose. Notes, tasks and the sync logs an Exchange account files here are not
+// correspondence at all. Written with a wildcard wherever an
+// accent falls, and matched against a name normalised first: macOS hands a
+// directory name over decomposed, so 'Elements supprimes' arrives with each
+// accent as a character of its own and a pattern spelling them out matches
+// nothing.
+const MAIL_SKIP = new RegExp('^(' + [
+  'drafts?', 'brouillons?', 'junk', 'spam', 'courrier ind', 'deleted', 'corbeille',
+  'trash', '.l.ments supprim', 'outbox', 'bo.te d.envoi', 'sendlater',
+  'recovered messages', 'notes', 'journal', 't.ches', 'tasks', 'todo',
+  'conversation history', 'historique des conversations', 'probl.mes de synchronisation',
+  'sync issues', 'import',
+].join('|') + ')', 'i');
+
+// A mailbox the client files sent mail in. Only detection uses this: the readers
+// go by the From on the message, because an account synchronised through Gmail
+// files what the user sent under All Mail and leaves Sent a set of pointers.
+const MAIL_SENT = /(^sent)|envoy/i;
+
+function mailHome(root) {
+  return root || path.join(process.env.HOME || '', ...MAIL_HOME);
+}
+
+// V10 today, V9 and V8 on the systems before it, and a root pointed straight at
+// one of them is taken as given.
+function mailRoots(root) {
+  const base = mailHome(root);
+  let items;
+  try {
+    items = fs.readdirSync(base, { withFileTypes: true });
+  } catch (err) {
+    return [];
+  }
+  const versions = items
+    .filter((item) => item.isDirectory() && /^V\d+$/.test(item.name))
+    .map((item) => path.join(base, item.name))
+    .sort();
+  return versions.length ? versions : [base];
+}
+
+// The name of the mailbox a file sits in, for the record: 'Sent Messages', 'Tous
+// les messages'. The directory above it is the account, and it is a UUID that
+// names nobody.
+function mailboxName(file) {
+  const parts = file.split(path.sep);
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const name = parts[index].normalize('NFC');
+    if (name.endsWith('.mbox')) return name.slice(0, -'.mbox'.length);
+  }
+  return 'Mail';
+}
+
+// Every .emlx under a root, skipped mailbox by skipped mailbox. A .partial.emlx
+// is a message whose body the client never finished downloading, and measuring
+// half a message as a whole one is worse than not measuring it.
+function emlxFiles(root, skip) {
+  const found = [];
+  const stack = [root];
+  while (stack.length) {
+    let items;
+    const directory = stack.pop();
+    try {
+      items = fs.readdirSync(directory, { withFileTypes: true });
+    } catch (err) {
+      continue;
+    }
+    for (const item of items) {
+      const full = path.join(directory, item.name);
+      if (item.isDirectory()) {
+        const name = item.name.normalize('NFC');
+        if (name.endsWith('.mbox') && skip && skip.test(name.slice(0, -'.mbox'.length))) continue;
+        stack.push(full);
+      } else if (item.name.endsWith('.emlx') && !item.name.endsWith('.partial.emlx')) {
+        found.push(full);
+      }
+    }
+  }
+  return found.sort();
+}
+
+// The message inside an .emlx, as the bytes it was received in. Everything
+// downstream reads a string of single bytes and decodes it against the charset
+// the message declares, so the buffer is turned into one here and nowhere else.
+function emlxMessage(buffer) {
+  const newline = buffer.indexOf(0x0a);
+  if (newline < 0) return '';
+  const declared = Number.parseInt(buffer.toString('latin1', 0, newline), 10);
+  const start = newline + 1;
+  // A head read of the first few kilobytes holds a length far longer than what
+  // was read, and a file whose first line is not a number is not an .emlx at
+  // all; both fall back to the bytes actually in hand.
+  const end = Number.isFinite(declared) && declared > 0
+    ? Math.min(start + declared, buffer.length)
+    : buffer.length;
+  return buffer.toString('latin1', start, end);
+}
+
+function readHead(file, bytes) {
+  const handle = fs.openSync(file, 'r');
+  try {
+    const buffer = Buffer.alloc(bytes);
+    const read = fs.readSync(handle, buffer, 0, bytes, 0);
+    return buffer.subarray(0, read);
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
+// Every mailbox under the root rather than the sent ones alone, for the reason
+// given at MAIL_SENT: what the user sent is found by the From on it. The headers
+// are read first and the file only opened in full once they say the message is
+// theirs, which on a large account is the difference between reading eight
+// kilobytes a hundred thousand times and reading every byte of it.
+//
+// The same message filed under two labels is one message. Gmail files a sent
+// message under both Sent and All Mail, and counting it twice would weight
+// whatever it happens to say twice over, so the second copy is dropped on its
+// Message-Id.
+function collectAppleMail(root, options) {
+  const me = new Set((options.me || []).map((address) => address.toLowerCase()));
+  const counts = emptyCounts();
+  const report = decodeReport();
+  const samples = [];
+  const seen = new Set();
+
+  for (const base of mailRoots(root)) {
+    for (const file of emlxFiles(base, MAIL_SKIP)) {
+      counts.read += 1;
+      let headers;
+      try {
+        headers = splitMessage(emlxMessage(readHead(file, HEAD_BYTES))).headers;
+      } catch (err) {
+        counts.dropped.unreadable += 1;
+        continue;
+      }
+      const from = addressOf(decodeEncodedWords(headers.from));
+      if (!from || !me.has(from)) {
+        counts.dropped.not_from_the_user += 1;
+        continue;
+      }
+      const date = dateOf(headers.date);
+      if (options.since && date && date < options.since) {
+        counts.dropped.outside_the_window += 1;
+        continue;
+      }
+      const messageId = String(headers['message-id'] || '').trim();
+      if (messageId && seen.has(messageId)) {
+        counts.dropped.filed_twice += 1;
+        continue;
+      }
+      if (messageId) seen.add(messageId);
+
+      let message;
+      try {
+        message = emlxMessage(fs.readFileSync(file));
+      } catch (err) {
+        counts.dropped.unreadable += 1;
+        continue;
+      }
+      const sample = messageSample(message, {
+        me, counts, report, options, adapter: 'applemail', source: mailboxName(file), index: counts.kept + 1,
+      });
+      if (sample) {
+        counts.kept += 1;
+        samples.push(sample);
+      }
+    }
+  }
+
+  return { counts, samples, decoding: decoded(report) };
+}
+
+// Text out of the formats a letter actually gets saved in. Neither conversion is
+// written here: the system does it, and the adapter finds out at the moment it
+// needs one whether this machine has the tool. textutil ships with macOS;
+// pdftotext comes with poppler and is the one an agent may have to install. A
+// file whose converter is missing is counted unreadable and the missing tool is
+// named, rather than the file quietly leaving the corpus.
+const CONVERTERS = [
+  {
+    command: 'textutil',
+    extensions: ['.docx', '.doc', '.rtf', '.rtfd', '.odt', '.wordml', '.webarchive', '.html', '.htm'],
+    args: (file) => ['-convert', 'txt', '-stdout', file],
+  },
+  {
+    command: 'pdftotext',
+    extensions: ['.pdf'],
+    args: (file) => ['-layout', '-enc', 'UTF-8', file, '-'],
+  },
+];
+
+const CONVERTED = new Map(
+  CONVERTERS.flatMap((entry) => entry.extensions.map((extension) => [extension, entry]))
+);
+
+// Unlike a .txt file, a converted one carries a charset this script chose: both
+// tools are asked for utf-8 and told so here, rather than the encoding being
+// guessed back off bytes that were just written.
+function convertToText(file, extension, report) {
+  const converter = CONVERTED.get(extension);
+  if (!converter) return { text: null, missing: null };
+  try {
+    const out = execFileSync(converter.command, converter.args(file), {
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return { text: decodeCharset(out.toString('latin1'), 'utf-8', report), missing: null };
+  } catch (err) {
+    return { text: null, missing: err.code === 'ENOENT' ? converter.command : null };
+  }
+}
+
+const FOLDER_EXTENSIONS = new Set(['.txt', '.md', '.tex', ...CONVERTED.keys()]);
 
 // Enough TeX to read a letter written in it: comments out, environments out,
 // a command keeps the text it wraps.
@@ -902,10 +1164,23 @@ function collectFolder(directory, options) {
   const report = decodeReport();
   const samples = [];
 
+  const missing = new Set();
+  const author = (options.author || []).map((name) => name.toLowerCase()).filter(Boolean);
+
   for (const file of walk(directory)) {
     counts.read += 1;
+    const extension = path.extname(file).toLowerCase();
     let text;
-    try {
+    if (CONVERTED.has(extension)) {
+      const converted = convertToText(file, extension, report);
+      if (converted.missing) missing.add(converted.missing);
+      if (converted.text === null) {
+        counts.dropped.unreadable += 1;
+        continue;
+      }
+      text = converted.text.replace(/\r\n/g, '\n');
+    } else {
+      try {
       // Read as bytes and decoded like a mail part: a letter saved by an older
       // editor is cp1252 or latin1, and a lenient utf-8 read turns every accented
       // letter in it into a replacement character without failing, so the sample
@@ -917,24 +1192,46 @@ function collectFolder(directory, options) {
       //
       // One kind of line ending in the samples, the one the mbox path already
       // hands over, so that no carriage return travels into an extract.
-      text = decodeCharset(fs.readFileSync(file).toString('latin1'), '', report).replace(/\r\n/g, '\n');
-    } catch (err) {
-      counts.dropped.unreadable += 1;
-      continue;
+        text = decodeCharset(fs.readFileSync(file).toString('latin1'), '', report).replace(/\r\n/g, '\n');
+      } catch (err) {
+        counts.dropped.unreadable += 1;
+        continue;
+      }
     }
     if (undecoded(text)) {
       counts.dropped.unreadable += 1;
       continue;
     }
 
-    const extension = path.extname(file).toLowerCase();
+    // A directory of correspondence holds what was received as well as what was
+    // written, and a letter from a lawyer measured as the user's own voice is
+    // the worst sample a corpus can hold. There is no telling them apart by
+    // filename, so the caller names what the user signs with and a document
+    // that does not carry it is not theirs.
+    if (author.length) {
+      const haystack = text.toLowerCase();
+      if (!author.some((name) => haystack.includes(name))) {
+        counts.dropped.not_from_the_user += 1;
+        continue;
+      }
+    }
+
     const parted = splitSignature(stripQuoted(extension === '.tex' ? texToText(text) : text).text);
     if (!wordCount(parted.body)) {
       counts.dropped.nothing_of_their_own += 1;
       continue;
     }
 
+    // The only date a letter carries is the one in its name. A file without one
+    // is kept whatever the window says, for the reason messageSample gives: a
+    // window that silently drops what it cannot date thins the corpus and
+    // reports nothing. The modification time is not used, since copying a file
+    // rewrites it and would date a letter from the day it was moved.
     const stamp = /(\d{4}-\d{2}(?:-\d{2})?)/.exec(path.basename(file));
+    if (options.since && stamp && stamp[1] < options.since.slice(0, stamp[1].length)) {
+      counts.dropped.outside_the_window += 1;
+      continue;
+    }
     counts.kept += 1;
     samples.push(makeSample({
       id: options.tag + '-' + String(counts.kept).padStart(4, '0'),
@@ -950,7 +1247,113 @@ function collectFolder(directory, options) {
     }));
   }
 
-  return { counts, samples, decoding: decoded(report) };
+  return { counts, samples, decoding: decoded(report), missing: [...missing].sort() };
+}
+
+// --- Detection --------------------------------------------------------------
+
+// What this machine can already read, and the addresses to put to the user.
+// Detection is why step 1 no longer opens by asking for an export: on a machine
+// whose mail client syncs, everything the collection needs is on the disk
+// already, and asking someone to export what is under their own home directory
+// is asking them to do a script's work.
+//
+// An address is printed here; a message never is. That line is where the consent
+// sits. The addresses a person sends from are their identity, which step 1 has
+// to establish either way and which nothing can guess for them. What they wrote
+// stays on the disk and goes to --out.
+//
+// The count beside each address is what the collection would read, so a corpus
+// too thin to measure is visible before a single sample is written rather than
+// three steps later.
+const ROBOTS = new RegExp('^(' + [
+  'no-?reply', 'do-?not-?reply', 'newsletter', 'notifications?', 'mailer-daemon',
+  'postmaster', 'bounces?', 'auto-?(reply|mated)', 'alerts?', 'mailing', 'news',
+].join('|') + ')\\b|[+.](bounce|noreply)[@.]', 'i');
+
+// Under this, an address is a handful of messages in a hundred thousand: a
+// mailing list that once used the user's name, or a header that parsed wrong.
+const DETECT_FLOOR = 3;
+const DETECT_ROWS = 40;
+
+function detectAppleMail(root) {
+  const senders = new Map();
+  const lines = [];
+  for (const base of mailRoots(root)) {
+    const files = emlxFiles(base, MAIL_SKIP);
+    if (!files.length) continue;
+    lines.push('Apple Mail    ' + base);
+    lines.push('              ' + files.length + ' messages, drafts, junk and trash left out');
+    for (const file of files) {
+      let from;
+      try {
+        from = addressOf(decodeEncodedWords(splitMessage(emlxMessage(readHead(file, HEAD_BYTES))).headers.from));
+      } catch (err) {
+        continue;
+      }
+      if (from) senders.set(from, (senders.get(from) || 0) + 1);
+    }
+  }
+  return { lines, senders };
+}
+
+// A mailbox someone exported by hand and left where exports land.
+function detectMboxFiles() {
+  const lines = [];
+  for (const place of ['Desktop', 'Downloads', 'Documents']) {
+    const directory = path.join(process.env.HOME || '', place);
+    let items;
+    try {
+      items = fs.readdirSync(directory, { withFileTypes: true });
+    } catch (err) {
+      continue;
+    }
+    for (const item of items) {
+      if (!item.isDirectory() && item.name.toLowerCase().endsWith('.mbox')) {
+        lines.push('mbox file     ' + path.join(directory, item.name));
+      }
+    }
+  }
+  return lines;
+}
+
+// Thunderbird stores its mail as mbox files without an extension, so the profile
+// is named and the export is left to the user: guessing which file under it is
+// the sent mailbox is how a corpus ends up being the wrong folder.
+function detectThunderbird() {
+  const places = [
+    path.join(process.env.HOME || '', 'Library', 'Thunderbird', 'Profiles'),
+    path.join(process.env.HOME || '', '.thunderbird'),
+  ];
+  return places.filter((place) => fs.existsSync(place)).map((place) => 'Thunderbird   ' + place);
+}
+
+function detectLines(root) {
+  const mail = detectAppleMail(root);
+  const sources = [...mail.lines, ...detectMboxFiles(), ...detectThunderbird()];
+  if (!sources.length) {
+    return [
+      'No mail this machine can read without help.',
+      '',
+      'Export the sent mail of two accounts as .mbox and collect them with the',
+      'mbox adapter, or paste the pieces into a directory and use folder.',
+    ];
+  }
+
+  const rows = [...mail.senders.entries()]
+    .filter(([address, count]) => count >= DETECT_FLOOR && !ROBOTS.test(address))
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, DETECT_ROWS);
+  if (!rows.length) return sources;
+
+  const width = String(rows[0][1]).length;
+  return sources.concat([
+    '',
+    'Addresses seen sending, most used first. Yours and the people who write to',
+    'you are in one list here and only you can tell them apart: name the ones you',
+    'send from, and they become --me.',
+    '',
+  ], rows.map(([address, count]) => '  ' + String(count).padStart(width) + '  ' + address));
 }
 
 // --- Command line ---------------------------------------------------------
@@ -958,13 +1361,23 @@ function collectFolder(directory, options) {
 const USAGE = [
   'voice.md sample collection',
   '',
-  '  node scripts/collect.js mbox <file.mbox> --me <address>[,<address>] --tag pro --out <file> [--lang fr]',
-  '  node scripts/collect.js folder <directory> [--tag letters] --out <file> [--lang fr]',
+  '  node scripts/collect.js detect',
+  '  node scripts/collect.js applemail --me <address>[,<address>] --tag pro --out <file> --lang fr [--since 3y]',
+  '  node scripts/collect.js mbox <file.mbox> --me <address>[,<address>] --tag pro --out <file> --lang fr',
+  '  node scripts/collect.js folder <directory> --tag letters --out <file> --lang fr [--author <name>]',
   '',
   '  --me      the addresses the user sends from; only those messages are kept',
   '  --tag     the name of the source in the output, usually pro or perso',
   '  --out     the file the JSON document is written to, required',
   '  --lang    the language of the samples, carried through to the stylometry',
+  '  --since   a date, or a number of years back such as 3y; older samples are',
+  '            left out, and a sample that carries no date is kept',
+  '  --author  what the user signs with; a document in the directory that does',
+  '            not carry it was written by somebody else',
+  '',
+  'detect names what this machine can read and the addresses it sees sending,',
+  'and writes nothing. It is the first thing to run: on a machine whose mail',
+  'client syncs there is nothing to export, and applemail reads it where it is.',
   '',
   'The document holds one entry per sample: the text, the mailbox tag, the',
   'adapter it came from, the date, the recipient domain, the guessed surface and',
@@ -976,7 +1389,10 @@ const USAGE = [
 ].join('\n');
 
 function parseArgs(argv) {
-  const options = { adapter: null, source: null, tag: null, me: [], out: null, lang: null, unknown: [] };
+  const options = {
+    adapter: null, source: null, tag: null, me: [], out: null, lang: null,
+    since: null, author: [], unknown: [],
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--tag') { index += 1; options.tag = argv[index] || null; }
@@ -987,6 +1403,10 @@ function parseArgs(argv) {
     else if (arg.startsWith('--out=')) options.out = arg.slice('--out='.length);
     else if (arg === '--me') { index += 1; options.me.push(...String(argv[index] || '').split(',')); }
     else if (arg.startsWith('--me=')) options.me.push(...arg.slice('--me='.length).split(','));
+    else if (arg === '--since') { index += 1; options.since = argv[index] || null; }
+    else if (arg.startsWith('--since=')) options.since = arg.slice('--since='.length);
+    else if (arg === '--author') { index += 1; options.author.push(...String(argv[index] || '').split(',')); }
+    else if (arg.startsWith('--author=')) options.author.push(...arg.slice('--author='.length).split(','));
     else if (arg.startsWith('--')) { options.unknown.push(arg); index += 1; }
     else if (!options.adapter) options.adapter = arg;
     else if (!options.source) options.source = arg;
@@ -997,14 +1417,37 @@ function parseArgs(argv) {
     else options.unknown.push(arg);
   }
   options.me = options.me.map((address) => address.trim().toLowerCase()).filter(Boolean);
+  options.author = options.author.map((name) => name.trim()).filter(Boolean);
   return options;
+}
+
+// A window given as a date, or as the number of years back the corpus should
+// begin: --since 3y is what the setup asks for, resolved against the day the
+// collection runs. Anything else is refused rather than read as no window at
+// all, which would measure ten years of mail and say it measured three.
+function resolveSince(value) {
+  if (!value) return { since: null, ok: true };
+  const text = String(value).trim();
+  const years = /^(\d+)y$/.exec(text);
+  if (years) {
+    const date = new Date();
+    date.setFullYear(date.getFullYear() - Number(years[1]));
+    return { since: date.toISOString().slice(0, 10), ok: true };
+  }
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? { since: text, ok: true } : { since: null, ok: false };
 }
 
 // The name of the source, not its path: a folder called Lettres-avocat-Dupont or
 // a file called sent-cabinet-martin.mbox names a correspondent, and this line
 // travels through the stylometry into the one file the model reads.
+const SOURCE_LABELS = {
+  mbox: 'one mailbox tagged ',
+  applemail: 'the mail on this machine tagged ',
+  folder: 'one folder tagged ',
+};
+
 function sourceLabel(options) {
-  return (options.adapter === 'mbox' ? 'one mailbox tagged ' : 'one folder tagged ') + options.tag;
+  return (SOURCE_LABELS[options.adapter] || 'one source tagged ') + options.tag;
 }
 
 function document(options, result) {
@@ -1020,24 +1463,47 @@ function document(options, result) {
   };
 }
 
+const ADAPTERS = new Set(['mbox', 'applemail', 'folder']);
+
+// The adapters that read a mailbox: what tells a sent message from a received
+// one is the From on it, so neither runs without being told what the user sends
+// from.
+const NEEDS_ME = new Set(['mbox', 'applemail']);
+
 function runCli(argv, write, writeError) {
   const options = parseArgs(argv);
   if (options.unknown.length) {
     writeError('unknown arguments: ' + options.unknown.join(', '));
     return 1;
   }
-  if (!options.adapter || !options.source) {
+  // Detection reads mail and writes nothing, so it takes none of the flags the
+  // rest of this script requires: no --out, because it has no corpus to put
+  // anywhere, and no --me, because naming those addresses is what it is for.
+  if (options.adapter === 'detect') {
+    write(detectLines(options.source).join('\n'));
+    return 0;
+  }
+  // Apple Mail is the one source that needs no path: it is always under the
+  // home directory, and a path given anyway overrides it.
+  if (!options.adapter || (!options.source && options.adapter !== 'applemail')) {
     write(USAGE);
     return options.adapter ? 1 : 0;
   }
-  if (options.adapter !== 'mbox' && options.adapter !== 'folder') {
+  if (!ADAPTERS.has(options.adapter)) {
     writeError('unknown adapter: ' + options.adapter);
     return 1;
   }
-  if (options.adapter === 'mbox' && !options.me.length) {
-    writeError('mbox needs --me: without it there is no telling which messages the user sent');
+  if (NEEDS_ME.has(options.adapter) && !options.me.length) {
+    writeError(options.adapter + ' needs --me: without it there is no telling which messages the user sent'
+      + (options.adapter === 'applemail' ? '; run detect to see the addresses this machine sends from' : ''));
     return 1;
   }
+  const window = resolveSince(options.since);
+  if (!window.ok) {
+    writeError('--since takes a date as 2024-01-31, or a number of years back as 3y: ' + options.since);
+    return 1;
+  }
+  options.since = window.since;
   // Checked before a single message is read: a corpus printed by accident is
   // read by whoever is watching this output, which in an agent session is the
   // model.
@@ -1047,11 +1513,10 @@ function runCli(argv, write, writeError) {
   }
   if (!options.tag) options.tag = options.adapter === 'folder' ? 'letters' : 'mail';
 
+  const READERS = { mbox: collectMbox, applemail: collectAppleMail, folder: collectFolder };
   let result;
   try {
-    result = options.adapter === 'mbox'
-      ? collectMbox(options.source, options)
-      : collectFolder(options.source, options);
+    result = READERS[options.adapter](options.source, options);
   } catch (err) {
     writeError(options.source + ': ' + err.message);
     return 1;
@@ -1061,9 +1526,20 @@ function runCli(argv, write, writeError) {
   // a folder holding nothing readable, used to exit 0 and let the stylometry
   // announce a source that contributed no sample.
   if (!result.counts.kept) {
-    writeError(options.source + ': 0 samples of ' + result.counts.read + ' read'
-      + (options.adapter === 'mbox' ? '; no message has a From among ' + options.me.join(', ') : ''));
+    writeError(String(options.source) + ': 0 samples of ' + result.counts.read + ' read'
+      + (NEEDS_ME.has(options.adapter) ? '; no message has a From among ' + options.me.join(', ') : '')
+      + (result.counts.dropped.outside_the_window
+        ? '; ' + result.counts.dropped.outside_the_window + ' fell outside the window opening ' + options.since
+        : ''));
     return 1;
+  }
+  // A converter this machine does not have takes a whole format out of the
+  // corpus, and the letters in it are the samples the user actually approved.
+  // Saying which tool is missing is what lets somebody install it and rerun.
+  if (result.missing && result.missing.length) {
+    writeError(result.missing.join(' and ') + ' not on this machine: '
+      + result.missing.map((tool) => tool === 'pdftotext' ? '.pdf' : 'the word processor formats').join(' and ')
+      + ' were left out of the corpus');
   }
   // What could not be read as it was declared is said here, because nothing
   // further down the pipeline can tell: a mailbox exported in a charset this
@@ -1086,9 +1562,11 @@ function runCli(argv, write, writeError) {
     writeError(options.out + ': ' + err.message);
     return 1;
   }
-  const unreadable = result.counts.dropped.unreadable;
+  const dropped = result.counts.dropped;
   write(result.counts.kept + ' samples of ' + result.counts.read + ' read, written to ' + options.out
-    + (unreadable ? '; ' + unreadable + ' did not decode and were not measured' : ''));
+    + (dropped.outside_the_window ? '; ' + dropped.outside_the_window + ' before ' + options.since : '')
+    + (dropped.filed_twice ? '; ' + dropped.filed_twice + ' filed twice' : '')
+    + (dropped.unreadable ? '; ' + dropped.unreadable + ' did not decode and were not measured' : ''));
   return 0;
 }
 
@@ -1098,6 +1576,8 @@ module.exports = {
   decodeCharset, decodeReport, splitMultipart, htmlToText, partText, addressesOf, addressOf, addressesIn, dateOf,
   stripQuoted, splitSignature, salutationOf, mask, COLLECT_MASKS, wordCount, guessSurface, guessRegister, isPublicBody,
   texToText, collectMbox, collectFolder, parseArgs, runCli, USAGE, MESSAGE_WORDS,
+  messageSample, emlxMessage, emlxFiles, mailRoots, mailboxName, readHead, MAIL_SKIP,
+  collectAppleMail, convertToText, resolveSince, detectLines, ROBOTS, CONVERTED,
 };
 
 if (require.main === module) {

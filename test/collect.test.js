@@ -1185,8 +1185,10 @@ test('the document names its source by its tag, never by the name of the file', 
 
 test('the usage names every flag a caller has to pass, --lang included', () => {
   assert.match(collect.USAGE, /--lang/);
-  const synopsis = collect.USAGE.split('\n').filter((line) => /collect\.js (mbox|folder)/.test(line));
-  assert.strictEqual(synopsis.length, 2);
+  // Detection is left out: it measures nothing, so it has no language to be
+  // told. Every adapter that writes a corpus is on this list.
+  const synopsis = collect.USAGE.split('\n').filter((line) => /collect\.js (mbox|folder|applemail)/.test(line));
+  assert.strictEqual(synopsis.length, 3);
   for (const line of synopsis) assert.match(line, /--lang/);
 });
 
