@@ -1,6 +1,6 @@
 {
   "name": "voice.md",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "One VOICE.md per person, brand or project, describing how they write, for agents that draft in their name. Ships the typography command and the setup that builds the file from what the author has already sent.",
   "license": "MIT",
   "author": "smkg75 (https://github.com/smkg75)",

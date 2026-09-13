@@ -8,7 +8,7 @@
     {
       "name": "voice",
       "source": "./",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "description": "One VOICE.md per person, brand or project, describing how they write, for agents that draft in their name. Ships the setup that builds the file from what the author has already sent, a skill that drafts with it, and the typography command they both call.",
       "license": "MIT"
     }
