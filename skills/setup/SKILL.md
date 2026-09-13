@@ -10,9 +10,12 @@ drafting in their name has something checkable to follow instead of an average o
 everyone. Seven steps: consent, collect, measure, write and reread, show, blind
 calibration, anchor.
 
-Step 1 is the gate: nothing is read before the yes it asks for, and between that
-yes and the saved profile there is no other question. What the subject thinks of
-their profile is asked once the profile exists, in step 5.
+Step 1 is the gate: nothing is read before the yes it asks for. Step 2 then
+detects what this machine already holds and puts one message back, naming which
+of the addresses it found are the subject's own, because a mailbox holds
+everybody's and nothing in it tells them apart. Nothing else is asked between
+that yes and the saved profile. What the subject thinks of their profile is
+asked once the profile exists, in step 5.
 
 `docs/spec.md` and the scripts ship beside this skill in the plugin. Every
 command block below opens by naming that directory, because a tool call does not
@@ -46,6 +49,11 @@ skill governs how one gets built. Read it before step 4.
   else's voice.
 - **The raw corpus stays on disk.** The scripts read the mailboxes; the model
   reads `analysis.json` and `exemplars.md` and nothing else from the corpus.
+- **A connector is not a collector.** An API or an MCP server hands the messages
+  to whoever asked for them, which in an agent session is the model. The scripts
+  read the mail on the disk instead, where a syncing client has already written
+  it. Where a connector is the only way into an account, say what it costs
+  before reaching for it.
 - **The profile holds style, not secrets.** The spec's rule on personal data is
   a MUST, and the working test is wider: every line has to be fine on a screen
   someone else can see.
@@ -55,58 +63,71 @@ skill governs how one gets built. Read it before step 4.
 ## Step 1 - Consent
 
 One message, and nothing happens until it is answered with a yes. Until then
-nothing on disk is listed, opened or checked, the destination included. It says
-four things:
+nothing on disk is listed, opened or checked, the destination included.
+Detection is part of the reading this asks for, not a way around it: it opens
+mail files, and it waits like everything else.
 
-1. **Which sources.** At least one work mailbox and one personal mailbox,
-   exported as `.mbox`, plus, if they have them, a folder of letters they wrote
-   and corrected by hand. Two mailboxes is the floor because a single one
-   measures one register and calls it a voice. There is no ceiling on samples.
+The message says four things:
+
+1. **Where the writing comes from.** Not an export, wherever this machine can
+   avoid one. A mail client that syncs has already written every message to the
+   disk, and step 2 reads it where it lies. The floor is two registers, one
+   working and one private, because a single account measures one register and
+   calls it a voice; on one machine that is usually two accounts in the same
+   client. Add the letters they wrote and corrected by hand, if they have them,
+   which the collector reads as documents rather than as mail. Where nothing on
+   the machine is readable, the fallbacks are a `.mbox` export or pasted pieces.
+   There is no ceiling on samples.
 2. **Where the work happens.** `~/.agents/voice-setup/`, mode 700, outside any
    repository, deleted at the end of the run.
 3. **What passes through the model.** Statistics, and exemplars with addresses,
    telephone numbers, bank identifiers, links and names masked. The exemplars
    file states in its own header what the masking does not reach, and it is read
-   before anything is quoted. The raw messages are read by the scripts, on disk,
-   and are never quoted back into the conversation.
-4. **What comes out.** A `VOICE.md`, at `~/.agents/VOICE.md` for a person or
-   `<project>/VOICE.md` for a brand or a project, plus one line in
-   `~/.claude/CLAUDE.md` so later drafts find it.
+   before anything is quoted. The messages themselves are read by the scripts,
+   on the disk, and are never quoted back into the conversation. That is also
+   what rules a mail connector out as the way in, and it is worth saying rather
+   than implying: a connector hands the messages to whoever asked for them,
+   which here is the model, so a corpus collected through one is a corpus the
+   model has read. Where a connector is the only way to reach an account, say
+   what it costs and let the subject choose.
+4. **What comes out.** A `VOICE.md`, at `~/.agents/VOICE.md` for a person or at
+   the root of the project it describes, plus one line in `~/.claude/CLAUDE.md`
+   so that later drafts find it.
 
-The same message asks for four things no script can measure and the run cannot
-go on without: the **name** the file carries, its **kind** (person, brand or
-project), its **lang**, the language it is written in, as a short BCP 47 code
-such as `fr` or `en`, and the **addresses they send from**, all of them, across
-both mailboxes. Name and kind are front matter the spec requires. Lang is the one
-that silently ruins a run: it picks the tokenizer, the quotation marks and the
-familiar-against-formal second person, so a French corpus measured as English
-comes back with that count marked not applicable, and the register work rests on
-it. It is also what every command block below carries as `VOICE_LANG`. Ask for a
-mixed corpus in one language, not for two. The addresses are what tells a sent
-message from a received one inside an exported mailbox: the collector refuses to
-run without them, they filter the mailbox, and they are written into nothing.
+Then it asks for the yes, and for nothing else.
 
-For a kind other than person, ask in the same message which directory the file
-belongs in. `<project>/VOICE.md` names no particular directory, and the
-destination is the subject's to choose, not a path to guess at the end of the
-run.
+The four facts the file cannot be written without, the name on it, its kind, its
+language and the addresses the subject sends from, are not asked here. Three of
+them this run can propose on its own, and the fourth needs a list that does not
+exist until the detection has run. All four are settled together in step 2, in
+one message.
 
-That is still one message and still one gate: these answers move nothing on disk
-either, and nothing is read until the yes.
+**Do not ask someone to type what is already on their disk.** Run outside a
+repository, a VOICE.md is a person's and belongs at `~/.agents/VOICE.md`: take
+that as given, and do not raise it. Run inside one, it describes that project or
+that brand, belongs at its root, and the directory is worth confirming. The name
+is the account this machine is set up with. The language is the system language,
+crosschecked in step 2 against the mailbox names the client wrote, and confirmed
+aloud rather than left silent: it picks the tokenizer, the quotation marks and
+the familiar-against-formal second person, so a French corpus measured as
+English comes back with that count marked not applicable, and the register work
+rests on it. Ask for a mixed corpus in one language, not for two.
 
-Someone with no export to give can paste five to fifteen real pieces instead:
-messages and letters they actually sent, the more varied the better. That is a
-smaller corpus, not a failed one, and the provenance line will say so.
+A no ends the run there: nothing is read, nothing is written, and no working
+directory is left behind.
 
-One mailbox is under the floor and still runs: go on, write the thinness into
-the provenance line, and say aloud that a single mailbox measures one register
-and calls it a voice. A no ends the run there: nothing is read, nothing is
-written, and no working directory is left behind.
+Someone whose machine holds nothing readable can paste five to fifteen real
+pieces instead: messages and letters they actually sent, the more varied the
+better. That is a smaller corpus, not a failed one, and the provenance line will
+say so.
 
-This message asks for the sources, for those four facts and for the yes, and for
-nothing else. Their tone, their best pieces and the surfaces that matter come out
-of the corpus in step 3 and out of their reaction to the finished profile in
-step 5.
+One account is under the floor and still runs: go on, write the thinness into the
+provenance line, and say aloud that a single account measures one register and
+calls it a voice.
+
+Their tone, their best pieces and the surfaces that matter are not asked here
+either. Those come out of the corpus in step 3, and out of their reaction to the
+finished profile in step 5.
 
 ## Step 2 - Collect
 
@@ -117,35 +138,131 @@ WORK=$HOME/.agents/voice-setup
 mkdir -p "$WORK/samples" && chmod 700 "$WORK"
 ```
 
-Then the export, which happens in their mail client, by hand:
+### Detect before asking anything
+
+```bash
+ROOT=${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/voice.md}
+node "$ROOT/scripts/collect.js" detect
+```
+
+It names what this machine can read and prints the addresses it saw sending,
+most used first, with a count beside each. It writes nothing and quotes no
+message: an address is the author's identity, which this step has to establish
+either way, and what they wrote stays on the disk. On an account of a hundred
+thousand messages it takes about a minute, because it reads the head of every
+file and the body of none.
+
+What comes back is a list, not an answer. The subject's own addresses and their
+correspondents' are in one column, and only they can tell them apart. Put it
+back as a table and settle four things in that single message:
+
+1. **Which addresses are theirs**, and the tag each belongs under, `work` or
+   `personal`. The counts beside them are what the corpus will be made of, so a
+   register with two hundred messages behind it and one with nine are visible
+   here rather than three steps later.
+2. **The language**, proposed rather than asked open.
+3. **The window**, below.
+4. **The letters**, where a directory of them exists.
+
+Where detection finds nothing, the fallbacks further down are the way in.
+
+### The window
+
+Three years by default, `--since 3y`. A voice measured across ten years is an
+average of the person's successive voices and reads like nobody. Widen it where
+the corpus turns out thin, narrow it where the subject says their writing
+changed. A sample carrying no date is kept whatever the window says: a window
+that silently drops what it cannot date thins the corpus and reports nothing.
+
+### One run per register
+
+`applemail` needs no path, the mail being always under the home directory.
+`--me` lists the addresses of that register, comma separated; both mailbox
+adapters refuse to run without it, since nothing else tells a sent message from
+a received one, and those addresses filter the mail without being written into
+anything. `--lang` takes `VOICE_LANG`, on every run.
+
+```bash
+ROOT=${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/voice.md}
+WORK=$HOME/.agents/voice-setup
+VOICE_LANG=fr
+node "$ROOT/scripts/collect.js" applemail \
+  --me you@work.example --tag work --since 3y --lang "$VOICE_LANG" --out "$WORK/samples/work-mail.json"
+node "$ROOT/scripts/collect.js" applemail \
+  --me you@personal.example --tag personal --since 3y --lang "$VOICE_LANG" --out "$WORK/samples/personal-mail.json"
+```
+
+Substitute the addresses the subject just named and, on the `VOICE_LANG` line,
+their language code; the flags themselves are what the script accepts, and
+nothing else is.
+
+Drafts, junk, trash and the outbox are left out by the reader, and every other
+mailbox is read: an account synchronised through Gmail files what the user sent
+under All Mail and leaves Sent a set of pointers, so the sent mail is found by
+the From on it rather than by the folder it sits in. One message filed under two
+labels is dropped the second time on its Message-Id, and the summary says how
+many that was.
+
+### Letters, in the formats letters are saved in
+
+`folder` takes a directory of pieces the subject wrote and corrected by hand. It
+reads `.txt`, `.md` and `.tex` itself, and `.docx`, `.doc`, `.rtf`, `.odt` and
+`.pdf` through what the system provides, `textutil` and `pdftotext`. A converter
+this machine lacks is named in the summary, rather than a whole format quietly
+leaving the corpus.
+
+A directory of correspondence holds what was received as well as what was
+written, and a letter from a lawyer measured as the subject's own voice is the
+worst sample a corpus can hold. `--author` is what keeps those out: give it what
+the subject signs with, and a document that does not carry it is counted as
+somebody else's.
+
+```bash
+node "$ROOT/scripts/collect.js" folder ~/Documents/letters \
+  --tag validated --author "Firstname Lastname" --lang "$VOICE_LANG" --out "$WORK/samples/letters.json"
+```
+
+Pasted pieces take the same adapter: write one file per piece under
+`$WORK/samples/pasted/`, then run `folder` over that directory, without
+`--author`, the subject having just vouched for every one of them.
+
+### Where the client cannot be read
+
+`mbox` takes a single mailbox file exported by hand, which is the way in on a
+machine whose client keeps nothing locally, and the way in for a mailbox that
+lives nowhere else:
 
 - **Apple Mail**: select the Sent mailbox of the account, then Mailbox > Export
   Mailbox, which writes one `.mbox` per mailbox.
 - **Gmail**: Google Takeout, Mail only, which arrives as one `.mbox`.
 - **Thunderbird**: the ImportExportTools add-on, on the Sent folder.
-- **Anything else**: any single-file `.mbox` export of sent mail works.
+- **Anything else**: any single file `.mbox` export of sent mail works.
 
-Run the collector once per source. `mbox` takes one mailbox file and the tag it
-carries into the statistics; `folder` takes a directory of `.txt`, `.md` or
-`.tex` pieces the subject wrote and corrected by hand, the reviewed letters.
-Those letters are not weighted double. Nothing downstream consumes a weight, and
-a figure nobody can recompute is worse than a flat one. What they get instead is
-a place in the queue of extracts, in two parts. **Every group that holds at
-least one reviewed letter quotes at least one**: the reviewed letter nearest the
-median of its group takes a guaranteed place, wherever its length would have put
-it. And **at comparable length a reviewed letter is quoted before a sent mail**,
-comparable meaning anywhere between the first and the third quartile of its own
-group, which is the middle half of it. Outside that range a reviewed letter wins
-no rank beyond its guaranteed place, so a very long or a very short one cannot
-pass itself off as typical. Each is marked `reviewed` in the heading of its
-extract, and they stand as their own source in the provenance line. That is what
-to promise, and no more than that.
+```bash
+node "$ROOT/scripts/collect.js" mbox ~/Desktop/sent-work.mbox \
+  --me you@work.example --tag work --since 3y --lang "$VOICE_LANG" --out "$WORK/samples/work-mail.json"
+```
 
-The tag is what keeps it countable, because it travels on every sample through
-the measure: `work` and `personal` for the two mailboxes, `validated` for the
-folder of reviewed letters. The provenance line written in step 4 counts one
-entry per tag, in the language of the file, on the shape `412 emails (work), 233
-emails (personal), 6 letters (validated)`.
+### What holds whatever the adapter
+
+Reviewed letters are not weighted double. Nothing downstream consumes a weight,
+and a figure nobody can recompute is worse than a flat one. What they get
+instead is a place in the queue of extracts, in two parts. **Every group that
+holds at least one reviewed letter quotes at least one**: the reviewed letter
+nearest the median of its group takes a guaranteed place, wherever its length
+would have put it. And **at comparable length a reviewed letter is quoted before
+a sent mail**, comparable meaning anywhere between the first and the third
+quartile of its own group, which is the middle half of it. Outside that range a
+reviewed letter wins no rank beyond its guaranteed place, so a very long or a
+very short one cannot pass itself off as typical. Each is marked `reviewed` in
+the heading of its extract, and they stand as their own source in the provenance
+line. That is what to promise, and no more than that.
+
+The tag is what keeps it countable, travelling on every sample through the
+measure: `work` and `personal` for the two registers, `validated` for the
+letters. The provenance line written in step 4 counts one entry per tag, in the
+language of the file, on the shape `412 emails (work), 233 emails (personal), 6
+letters (validated)`.
 
 **Every file that carries any of the corpus comes out of a script's own
 `--out`.** No shell redirection, not `>`, not `>>`, not `tee`, for a samples
@@ -162,28 +279,6 @@ The scripts write their own files; what they print is a summary to read.
 
 One run reads one source and writes one JSON document, so `--out` names a
 **file** and each source gets its own, or the second run overwrites the first.
-`--me` lists the addresses the subject sends from, comma separated; the mbox
-adapter refuses to run without it, since nothing else tells a sent message from a
-received one, and those addresses filter the mailbox without ever being written
-into the document. `--lang` takes `VOICE_LANG`, on every run.
-
-```bash
-ROOT=${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/voice.md}
-WORK=$HOME/.agents/voice-setup
-VOICE_LANG=fr
-node "$ROOT/scripts/collect.js" mbox ~/Desktop/sent-work.mbox \
-  --me you@example.com --tag work --lang "$VOICE_LANG" --out "$WORK/samples/work-mail.json"
-node "$ROOT/scripts/collect.js" mbox ~/Desktop/sent-personal.mbox \
-  --me you@example.net --tag personal --lang "$VOICE_LANG" --out "$WORK/samples/personal-mail.json"
-node "$ROOT/scripts/collect.js" folder ~/Documents/letters \
-  --tag validated --lang "$VOICE_LANG" --out "$WORK/samples/letters.json"
-```
-
-Substitute the export paths, the addresses of step 1 and, on the `VOICE_LANG`
-line, their language code; the flags themselves are what the scripts accept, and
-nothing else is. Pasted pieces take the `folder` path: write one file per piece
-under `$WORK/samples/pasted/`, then run `folder` over that directory, to its own
-`--out` file like the rest.
 
 Report counts per source when the collection is done, never message by message.
 

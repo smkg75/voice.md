@@ -33,13 +33,16 @@ npx github:smkg75/voice.md typo --voice VOICE.md lettre.md
 
 `/voice:setup`, and answer the first question honestly, because nothing is read before you do.
 
-It asks for your consent and for what it may read: one or two mailbox exports, a folder of letters
-you have reread, or a dozen messages pasted into the conversation. It then collects the samples
-locally, measures them, writes your `~/.agents/VOICE.md`, rereads it against the specification,
-shows it to you, and cuts what you say is not yours. Last it adds one line to your `CLAUDE.md` so a
-later draft finds the file, and deletes the working directory, which still held raw private text.
+It asks for your consent, and only then looks at what this machine holds. If your mail client
+syncs, your mail is already on the disk and there is nothing to export: it finds the accounts, shows
+you the addresses it saw sending, and asks which of them are yours. Otherwise it takes a mailbox
+export, a folder of letters you have reread, or a dozen messages pasted into the conversation. It
+then collects the samples locally, measures them, writes your `~/.agents/VOICE.md`, rereads it
+against the specification, shows it to you, and cuts what you say is not yours. Last it adds one
+line to your `CLAUDE.md` so a later draft finds the file, and deletes the working directory, which
+still held raw private text.
 
-About thirty minutes, most of it yours: exporting the mailbox, and reading the profile.
+About twenty minutes, most of it reading the profile.
 
 ## 🧾 Commands
 
@@ -74,8 +77,10 @@ each one, are in [`DECISIONS.md`](DECISIONS.md).
 
 Nothing.
 
-The two scripts run locally and read your mail from files you exported yourself. The model never
-sees a mailbox: it reads `analysis.json`, which holds counts, medians and rates, and
+The two scripts run locally and read your mail off your own disk, where your mail client already
+wrote it. No account is opened over an API or a connector, which would hand your messages to the
+model on their way in. The model never sees a mailbox: it reads `analysis.json`, which holds
+counts, medians and rates, and
 `exemplars.md`, which holds a few short passages with addresses, amounts, references and
 correspondents' names already masked. The profile carries no personally identifying information,
 and the working directory is deleted at the end of the setup.
