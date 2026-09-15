@@ -250,6 +250,11 @@ Pasted pieces take the same adapter: write one file per piece under
 `$WORK/samples/pasted/`, then run `folder` over that directory, without
 `--author`, the subject having just vouched for every one of them.
 
+Pieces published on a channel of their own, posts on a professional network for
+instance, take the same adapter with `--surface post`, one file per piece. They
+are then measured as that channel rather than as letters or messages, and they
+show up in the profile as a surface of their own.
+
 ### Where the client cannot be read
 
 `mbox` takes a single mailbox file exported by hand, which is the way in on a

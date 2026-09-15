@@ -211,6 +211,16 @@ test('a letter addressed to the author and signed by someone else is not theirs'
   assert.strictEqual(result.samples[0].source, 'envoyee.txt');
 });
 
+test('a run named for one channel measures every sample on it, long or short', () => {
+  const dir = sandbox();
+  fs.writeFileSync(path.join(dir, 'court.txt'), 'Le chantier commence lundi et nous sommes prêts.');
+  fs.writeFileSync(path.join(dir, 'long.txt'), LETTER);
+  const result = collect.collectFolder(dir, { tag: 'linkedin', lang: 'fr', surface: 'post' });
+  assert.deepStrictEqual(result.samples.map((sample) => sample.surface), ['post', 'post']);
+  assert.strictEqual(collect.parseArgs(['folder', dir, '--surface', 'post']).surface, 'post');
+  assert.deepStrictEqual(collect.parseArgs(['folder', dir, '--surface', 'post']).unknown, []);
+});
+
 test('a letter in another language is counted apart like a message', () => {
   const dir = sandbox();
   fs.writeFileSync(path.join(dir, 'cover.txt'),

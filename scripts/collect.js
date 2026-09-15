@@ -800,7 +800,9 @@ function makeSample(fields) {
     source: fields.source,
     date: fields.date,
     recipient_domain: fields.recipientDomain,
-    surface: guessSurface(fields.adapter, fields.extension, words),
+    // Named by the caller when the run holds one channel only: a post is not a
+    // letter for being long, nor a message for being short.
+    surface: fields.surface || guessSurface(fields.adapter, fields.extension, words),
     register: guessRegister(fields.recipientDomain, text),
     words,
     text,
@@ -942,6 +944,7 @@ function finishSamples(entries, options, counts) {
       ...entry,
       id: options.tag + '-' + String(counts.kept).padStart(4, '0'),
       tag: options.tag,
+      surface: options.surface || null,
       body: mask(parted.body),
       signoff: mask(parted.signoff),
       signature: mask(parted.signature),
@@ -1581,7 +1584,7 @@ const USAGE = [
   '  node scripts/collect.js detect',
   '  node scripts/collect.js applemail --me <address>[,<address>] --tag pro --out <file> --lang fr [--since 3y]',
   '  node scripts/collect.js mbox <file.mbox> --me <address>[,<address>] --tag pro --out <file> --lang fr',
-  '  node scripts/collect.js folder <directory> --tag letters --out <file> --lang fr [--author <name>]',
+  '  node scripts/collect.js folder <directory> --tag letters --out <file> --lang fr [--author <name>] [--surface post]',
   '',
   '  --me      the addresses the user sends from; only those messages are kept',
   '  --tag     the name of the source in the output, usually pro or perso',
@@ -1593,6 +1596,8 @@ const USAGE = [
   '            not carry it was written by somebody else',
   '  --not     wording that marks a message an application sent in the user\'s',
   '            name; the common marks are refused without being named',
+  '  --surface the channel every sample of the run landed on, such as post;',
+  '            without it the surface is guessed from the length and the format',
   '',
   'detect names what this machine can read and the addresses it sees sending,',
   'and writes nothing. It is the first thing to run: on a machine whose mail',
@@ -1610,7 +1615,7 @@ const USAGE = [
 function parseArgs(argv) {
   const options = {
     adapter: null, source: null, tag: null, me: [], out: null, lang: null,
-    since: null, author: [], not: [], unknown: [],
+    since: null, author: [], not: [], surface: null, unknown: [],
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -1624,6 +1629,8 @@ function parseArgs(argv) {
     else if (arg.startsWith('--me=')) options.me.push(...arg.slice('--me='.length).split(','));
     else if (arg === '--since') { index += 1; options.since = argv[index] || null; }
     else if (arg.startsWith('--since=')) options.since = arg.slice('--since='.length);
+    else if (arg === '--surface') { index += 1; options.surface = argv[index] || null; }
+    else if (arg.startsWith('--surface=')) options.surface = arg.slice('--surface='.length);
     else if (arg === '--not') { index += 1; options.not.push(...String(argv[index] || '').split(',')); }
     else if (arg.startsWith('--not=')) options.not.push(...arg.slice('--not='.length).split(','));
     else if (arg === '--author') { index += 1; options.author.push(...String(argv[index] || '').split(',')); }
