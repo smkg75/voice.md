@@ -800,9 +800,37 @@ function emptyCounts() {
     kept: 0,
     dropped: {
       not_from_the_user: 0, nothing_of_their_own: 0, no_body: 0, unreadable: 0,
-      outside_the_window: 0, filed_twice: 0,
+      outside_the_window: 0, filed_twice: 0, written_by_a_machine: 0,
     },
   };
+}
+
+// Mail sent from the user's own address that the user did not write: the
+// notification an application sends in their name, the receipt, the alert. The
+// From is theirs and every other filter here passes it, so a CRM wired to a
+// mailbox can hand over thousands of identical messages and drown the voice it
+// was supposed to measure in the wording of a template.
+//
+// This is the ground rule about the subject's own writing, enforced rather than
+// stated: what an application wrote is somebody else's voice as surely as a
+// forwarded paragraph is. The marks below are the ones such mail carries about
+// itself, in the two languages this repository has corpora for; --not adds the
+// wording a particular system uses.
+// An accent is written or it is not, depending on what produced the message, so
+// every French mark below accepts the letter either way.
+const E = '[e\\u00e9]';
+const A = '[a\\u00e0]';
+const MACHINE_WRITTEN = new RegExp([
+  'envoy' + E + '+(e|s)* +automatiquement', 'message +automatique', 'mail +automatique',
+  'ne +pas +r' + E + 'pondre +' + A + ' +ce', 'vous +recevez +ce +(mail|message|courriel|e-?mail)',
+  'se +d' + E + 'sinscrire', 'd' + E + 'sinscription', 'notification +automatique',
+  'sent +automatically', 'automated +(message|email|notification|reply)',
+  'do +not +reply +to +this', 'you +are +receiving +this', 'unsubscribe',
+].join('|'), 'i');
+
+function writtenByAMachine(text, extra) {
+  if (MACHINE_WRITTEN.test(text)) return true;
+  return (extra || []).some((pattern) => text.toLowerCase().includes(pattern));
 }
 
 // One message to one sample, or to the reason it was dropped. A mailbox file
@@ -840,6 +868,12 @@ function messageSample(message, context) {
   // is not a message: it is counted as unreadable rather than measured.
   if (report.refused > before || undecoded(part.text)) {
     counts.dropped.unreadable += 1;
+    return null;
+  }
+  // Tested on the whole message, before the signature is split off, because the
+  // line that admits a machine wrote it is usually the last one.
+  if (writtenByAMachine(part.text, options.not)) {
+    counts.dropped.written_by_a_machine += 1;
     return null;
   }
   const stripped = stripQuoted(part.text);
@@ -1222,6 +1256,11 @@ function collectFolder(directory, options) {
       }
     }
 
+    if (writtenByAMachine(text, options.not)) {
+      counts.dropped.written_by_a_machine += 1;
+      continue;
+    }
+
     const parted = splitSignature(stripQuoted(extension === '.tex' ? texToText(text) : text).text);
     if (!wordCount(parted.body)) {
       counts.dropped.nothing_of_their_own += 1;
@@ -1380,6 +1419,8 @@ const USAGE = [
   '            left out, and a sample that carries no date is kept',
   '  --author  what the user signs with; a document in the directory that does',
   '            not carry it was written by somebody else',
+  '  --not     wording that marks a message an application sent in the user\'s',
+  '            name; the common marks are refused without being named',
   '',
   'detect names what this machine can read and the addresses it sees sending,',
   'and writes nothing. It is the first thing to run: on a machine whose mail',
@@ -1397,7 +1438,7 @@ const USAGE = [
 function parseArgs(argv) {
   const options = {
     adapter: null, source: null, tag: null, me: [], out: null, lang: null,
-    since: null, author: [], unknown: [],
+    since: null, author: [], not: [], unknown: [],
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -1411,6 +1452,8 @@ function parseArgs(argv) {
     else if (arg.startsWith('--me=')) options.me.push(...arg.slice('--me='.length).split(','));
     else if (arg === '--since') { index += 1; options.since = argv[index] || null; }
     else if (arg.startsWith('--since=')) options.since = arg.slice('--since='.length);
+    else if (arg === '--not') { index += 1; options.not.push(...String(argv[index] || '').split(',')); }
+    else if (arg.startsWith('--not=')) options.not.push(...arg.slice('--not='.length).split(','));
     else if (arg === '--author') { index += 1; options.author.push(...String(argv[index] || '').split(',')); }
     else if (arg.startsWith('--author=')) options.author.push(...arg.slice('--author='.length).split(','));
     else if (arg.startsWith('--')) { options.unknown.push(arg); index += 1; }
@@ -1424,6 +1467,7 @@ function parseArgs(argv) {
   }
   options.me = options.me.map((address) => address.trim().toLowerCase()).filter(Boolean);
   options.author = options.author.map((name) => name.trim()).filter(Boolean);
+  options.not = options.not.map((pattern) => pattern.trim().toLowerCase()).filter(Boolean);
   return options;
 }
 
@@ -1571,6 +1615,7 @@ function runCli(argv, write, writeError) {
   const dropped = result.counts.dropped;
   write(result.counts.kept + ' samples of ' + result.counts.read + ' read, written to ' + options.out
     + (dropped.outside_the_window ? '; ' + dropped.outside_the_window + ' before ' + options.since : '')
+    + (dropped.written_by_a_machine ? '; ' + dropped.written_by_a_machine + ' written by a machine' : '')
     + (dropped.filed_twice ? '; ' + dropped.filed_twice + ' filed twice' : '')
     + (dropped.unreadable ? '; ' + dropped.unreadable + ' did not decode and were not measured' : ''));
   return 0;
@@ -1584,6 +1629,7 @@ module.exports = {
   texToText, collectMbox, collectFolder, parseArgs, runCli, USAGE, MESSAGE_WORDS,
   messageSample, emlxMessage, emlxFiles, mailRoots, mailboxName, readHead, MAIL_SKIP,
   collectAppleMail, convertToText, resolveSince, detectLines, ROBOTS, CONVERTED,
+  writtenByAMachine, MACHINE_WRITTEN,
 };
 
 if (require.main === module) {

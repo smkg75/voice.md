@@ -391,3 +391,57 @@ test('the document names the mail on this machine by its tag, never by a path', 
   // The summary the caller reads names counts and a path, and never a sample.
   assert.doesNotMatch(done.stdout.toString(), /chantier|Cordialement/);
 });
+
+// --- What a machine wrote in the user's name --------------------------------
+
+test('a notification sent from the user address is not the user writing', () => {
+  // A CRM wired to a mailbox sends thousands of these with the user's From, and
+  // every other filter passes them. Measured, they turn a voice into a template.
+  const dir = tree([
+    { box: 'Sent Messages', name: '1.emlx', message: letter(['Message-Id: <a@example.com>']) },
+    {
+      box: 'Sent Messages',
+      name: '2.emlx',
+      message: letter(['Message-Id: <b@example.com>'])
+        + '\nCet email a ete envoye automatiquement par le logiciel.\n',
+    },
+  ]);
+  const result = collectMail(dir);
+  assert.strictEqual(result.counts.kept, 1);
+  assert.strictEqual(result.counts.dropped.written_by_a_machine, 1);
+});
+
+test('the marks are read with or without their accents, and ordinary prose passes', () => {
+  for (const text of [
+    'Cet email a été envoyé automatiquement.',
+    'Cet email a ete envoye automatiquement.',
+    'Merci de ne pas répondre à ce message.',
+    'You are receiving this because you signed up.',
+  ]) {
+    assert.ok(collect.writtenByAMachine(text, []), text + ' passed as the user writing');
+  }
+  for (const text of [
+    'Le dossier a été envoyé hier au notaire.',
+    'Je vous recevrai mardi comme convenu.',
+  ]) {
+    assert.strictEqual(collect.writtenByAMachine(text, []), false, text + ' was taken for a machine');
+  }
+});
+
+test('--not adds the wording one particular system uses', () => {
+  assert.strictEqual(collect.writtenByAMachine('Nouveau prospect via le formulaire', []), false);
+  assert.ok(collect.writtenByAMachine('Nouveau prospect via le formulaire', ['nouveau prospect']));
+  const options = collect.parseArgs(['applemail', '--me', ME, '--not', 'Nouveau Prospect,Alerte stock']);
+  assert.deepStrictEqual(options.not, ['nouveau prospect', 'alerte stock']);
+  assert.deepStrictEqual(options.unknown, []);
+});
+
+test('a document in a folder that a machine produced is dropped like the mail', () => {
+  const dir = sandbox();
+  fs.writeFileSync(path.join(dir, 'recu.txt'),
+    'Madame,\n\nVotre paiement a bien ete enregistre pour le mois courant.\n\n'
+    + 'Ce message automatique ne demande aucune reponse.\n');
+  const result = collect.collectFolder(dir, { tag: 'letters' });
+  assert.strictEqual(result.counts.kept, 0);
+  assert.strictEqual(result.counts.dropped.written_by_a_machine, 1);
+});

@@ -203,6 +203,16 @@ the From on it rather than by the folder it sits in. One message filed under two
 labels is dropped the second time on its Message-Id, and the summary says how
 many that was.
 
+Mail sent from the subject's own address is not always theirs. A CRM, a form or
+an application wired to the mailbox sends notifications in their name, by the
+thousand and word for word, and every filter above passes them. The reader drops
+what carries the usual marks of such mail, a line saying it was sent
+automatically or not to answer it, and counts it as written by a machine.
+`--not` adds the wording of one particular system, comma separated. Read the
+top n-grams in `analysis.json` after step 3 with that in mind: a phrase counted
+thousands of times at the same rate as its neighbours is a template, and the fix
+is a `--not` on the collection, not a line in the profile.
+
 ### Letters, in the formats letters are saved in
 
 `folder` takes a directory of pieces the subject wrote and corrected by hand. It
