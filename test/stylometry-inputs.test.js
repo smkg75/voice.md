@@ -410,12 +410,18 @@ const MASKED_LETTER = [
   'Cordialement',
 ].join('\n');
 
+// Eight copies, each collected from a folder of its own: in one folder they are
+// the same letter saved eight times, and seven are dropped as filed twice.
 function maskedFolder() {
-  const dir = sandbox();
-  for (let index = 0; index < 8; index += 1) {
+  const runs = Array.from({ length: 8 }, (unused, index) => {
+    const dir = sandbox();
     fileIn(dir, 'lettre-' + index + '.txt', MASKED_LETTER);
-  }
-  return collectFolder(dir, { tag: 'letters' });
+    return collectFolder(dir, { tag: 'letters' });
+  });
+  return {
+    counts: { kept: runs.reduce((sum, run) => sum + run.counts.kept, 0) },
+    samples: runs.flatMap((run) => run.samples),
+  };
 }
 
 function allNgrams(analysis) {

@@ -486,13 +486,17 @@ const LETTER_TEXT = [
 ].join('\n');
 
 test('a letter saved in cp1252 reads as the letter, exactly as its utf-8 twin does', () => {
-  const dir = sandbox();
-  const folder = path.join(dir, 'letters');
-  fs.mkdirSync(folder);
-  fs.writeFileSync(path.join(folder, '2026-03-lettre-a.txt'), Buffer.from(LETTER_BYTES, 'latin1'));
-  fs.writeFileSync(path.join(folder, '2026-03-lettre-b.txt'), Buffer.from(LETTER_TEXT, 'utf8'));
-
-  const samples = collect.collectFolder(folder, { tag: 'letters' }).samples;
+  // One folder each: in one folder the twins are the same letter saved twice, and
+  // the second is dropped as filed twice before it can be compared.
+  const samples = [
+    ['2026-03-lettre-a.txt', Buffer.from(LETTER_BYTES, 'latin1')],
+    ['2026-03-lettre-b.txt', Buffer.from(LETTER_TEXT, 'utf8')],
+  ].flatMap(([name, bytes]) => {
+    const folder = path.join(sandbox(), 'letters');
+    fs.mkdirSync(folder);
+    fs.writeFileSync(path.join(folder, name), bytes);
+    return collect.collectFolder(folder, { tag: 'letters' }).samples;
+  });
 
   assert.strictEqual(samples.length, 2);
   for (const sample of samples) {

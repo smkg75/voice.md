@@ -213,6 +213,12 @@ top n-grams in `analysis.json` after step 3 with that in mind: a phrase counted
 thousands of times at the same rate as its neighbours is a template, and the fix
 is a `--not` on the collection, not a line in the profile.
 
+The signature a mail client appends comes off too, even where no sign-off stands
+above it: a block of lines that ends ten messages or more of the same run is a
+signature, and it is cut from the end of every body it closes. A message written
+in another language than `--lang` is counted apart rather than measured, since
+the profile governs drafts in one language.
+
 ### Letters, in the formats letters are saved in
 
 `folder` takes a directory of pieces the subject wrote and corrected by hand. It
@@ -224,8 +230,16 @@ leaving the corpus.
 A directory of correspondence holds what was received as well as what was
 written, and a letter from a lawyer measured as the subject's own voice is the
 worst sample a corpus can hold. `--author` is what keeps those out: give it what
-the subject signs with, and a document that does not carry it is counted as
-somebody else's.
+the subject signs with, and a document that does not carry it among its closing
+lines, where a letter is signed, is counted as somebody else's. A letter the
+subject received carries their name too, at the head of it.
+
+The same letter is usually saved twice, as the document it was written in and
+as the PDF that left, and the second copy is counted as filed twice. A model
+whose fields were never filled in is not a letter anyone sent, and goes out as a
+blank template. What a letter opens on, the two address blocks, the place, the
+date and the object line, is cut before the greeting: it names both parties and
+says nothing of how the letter is written.
 
 ```bash
 node "$ROOT/scripts/collect.js" folder ~/Documents/letters \

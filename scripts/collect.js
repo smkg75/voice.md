@@ -686,12 +686,24 @@ function maskIban(text) {
   });
 }
 
+// A street address, the number, the kind of way and up to four words of its
+// name. A letter opens on two of them, the sender's and the recipient's, and a
+// signature carries one under every message. The number is required, so that
+// "la rue" in a sentence stays prose.
+const MASK_STREET = /\b\d{1,4}(?:[ \t]?(?:bis|ter|[A-Za-z])\b)?(?:-\d{1,4})?,?[ \t]+(?:rue|avenue|av|boulevard|bd|all[ée]e|place|chemin|impasse|quai|parvis|parv|street|road|lane|drive)\.?(?:[ \t]+[^\s,]+){1,4}/gi;
+
+// An identifier that mixes letters and figures, an account or a file number typed
+// without the word that announces it. Five figures at least, so that B2B, V10
+// and 2FA stay words.
+const MASK_IDENTIFIER = /\b[A-Za-z0-9]{6,}\b/g;
+const IDENTIFIER_DIGITS = 5;
+
 // The placeholders this file writes, named once so that the script downstream can
 // read them rather than restate them. scripts/stylometry.js cuts its run of
 // tokens at each of these and leaves them where they stand: a placeholder it does
 // not recognise is read as a word the person wrote, joins the two words it stands
 // between, and comes back masked a second time. The two lists must not drift.
-const COLLECT_MASKS = ['[email]', '[iban]', '[reference]', '[amount]', '[phone]'];
+const COLLECT_MASKS = ['[email]', '[iban]', '[reference]', '[amount]', '[phone]', '[address]'];
 
 // A figure is ordinary prose until it travels with a case number, and then it is
 // what someone owes on a file that names them. So the amounts of a message that
@@ -705,6 +717,10 @@ function mask(text) {
   MASK_CASE.lastIndex = 0;
   out = out.replace(MASK_CASE, (all, word, number) => all.replace(number, '[reference]'));
   if (hasCase) out = out.replace(MASK_AMOUNT, '[amount]');
+  out = out.replace(MASK_STREET, '[address]');
+  out = out.replace(MASK_IDENTIFIER, (token) => (
+    /[A-Za-z]/.test(token) && (token.match(/\d/g) || []).length >= IDENTIFIER_DIGITS ? '[reference]' : token
+  ));
   return out.replace(MASK_PHONE, '[phone]');
 }
 
@@ -801,6 +817,7 @@ function emptyCounts() {
     dropped: {
       not_from_the_user: 0, nothing_of_their_own: 0, no_body: 0, unreadable: 0,
       outside_the_window: 0, filed_twice: 0, written_by_a_machine: 0,
+      in_another_language: 0, a_blank_template: 0,
     },
   };
 }
@@ -826,6 +843,7 @@ const MACHINE_WRITTEN = new RegExp([
   'se +d' + E + 'sinscrire', 'd' + E + 'sinscription', 'notification +automatique',
   'sent +automatically', 'automated +(message|email|notification|reply)',
   'do +not +reply +to +this', 'you +are +receiving +this', 'unsubscribe',
+  'automatically +generated', 'g' + E + 'n' + E + 'r' + E + '+(e|s)* +automatiquement',
 ].join('|'), 'i');
 
 function writtenByAMachine(text, extra) {
@@ -833,12 +851,111 @@ function writtenByAMachine(text, extra) {
   return (extra || []).some((pattern) => text.toLowerCase().includes(pattern));
 }
 
+// A corpus is measured in one language, and a VOICE.md governs drafts in its
+// own: an English letter in a French corpus is cut by the French tokenizer and
+// read as a French writer's habits. A language this repository has a profile for
+// is told apart by the small words every sentence of it needs, and a text too
+// short to carry LANGUAGE_FLOOR of another language's is kept.
+const FUNCTION_WORDS = {
+  fr: ['le', 'la', 'les', 'des', 'est', 'et', 'pour', 'que', 'qui', 'une', 'dans', 'pas', 'vous', 'je',
+    'nous', 'sur', 'avec', 'du', 'au', 'ce'],
+  en: ['the', 'and', 'is', 'to', 'of', 'for', 'that', 'you', 'with', 'this', 'are', 'it', 'be', 'have',
+    'not', 'we', 'your', 'will', 'in', 'my'],
+};
+
+const LANGUAGE_FLOOR = 5;
+
+function inAnotherLanguage(text, lang) {
+  if (!FUNCTION_WORDS[lang]) return false;
+  const tokens = String(text).toLowerCase().match(/\p{L}+/gu) || [];
+  const hits = (list) => tokens.filter((token) => list.includes(token)).length;
+  const own = hits(FUNCTION_WORDS[lang]);
+  return Object.keys(FUNCTION_WORDS).some((other) => {
+    if (other === lang) return false;
+    const found = hits(FUNCTION_WORDS[other]);
+    return found >= LANGUAGE_FLOOR && found > 2 * own;
+  });
+}
+
+// The signature a mail client appends is the same block under hundreds of
+// messages, and splitSignature only finds one under a sign-off close to the end:
+// a company block of a dozen lines, or a short reply sent with no sign-off at
+// all, left the whole of it in the body, where it outweighed every phrase the
+// person wrote. So a line that ends at least RECURRING messages of one run is
+// taken for part of a signature, and a run of TAIL_RUN such lines at the end of a
+// body is cut. A sign-off is never one of them: it recurs because the person
+// writes it.
+const TAIL_LINES = 15;
+const RECURRING = 10;
+const TAIL_RUN = 3;
+
+function recurringTailLines(bodies) {
+  const seen = new Map();
+  for (const body of bodies) {
+    const tail = new Set(body.split('\n').map((line) => line.trim()).filter(Boolean).slice(-TAIL_LINES));
+    for (const line of tail) seen.set(line, (seen.get(line) || 0) + 1);
+  }
+  return new Set([...seen]
+    .filter(([line, count]) => count >= RECURRING && !SIGNOFF.test(line))
+    .map(([line]) => line));
+}
+
+function withoutRecurringTail(body, recurring) {
+  const lines = body.split('\n');
+  let end = lines.length;
+  let cut = 0;
+  while (end > 0 && (!lines[end - 1].trim() || recurring.has(lines[end - 1].trim()))) {
+    if (lines[end - 1].trim()) cut += 1;
+    end -= 1;
+  }
+  if (cut < TAIL_RUN) return { body, signoff: '', signature: '' };
+  const parted = splitSignature(lines.slice(0, end).join('\n'));
+  return {
+    body: parted.body,
+    signoff: parted.signoff,
+    signature: [parted.signature, lines.slice(end).join('\n').trim()].filter(Boolean).join('\n'),
+  };
+}
+
+// What every reader does once it has found the user's own text: the recurring
+// signatures of the run come off, a text in another language leaves, and what
+// remains is masked and numbered. Done over the whole run rather than message by
+// message, because a signature is only recognisable as the thing that repeats.
+function finishSamples(entries, options, counts) {
+  const bare = (entry) => !entry.signoff && !entry.signature;
+  const recurring = recurringTailLines(entries.filter(bare).map((entry) => entry.body));
+  const samples = [];
+  for (const entry of entries) {
+    const parted = bare(entry) ? withoutRecurringTail(entry.body, recurring) : entry;
+    if (!wordCount(parted.body)) {
+      counts.dropped.nothing_of_their_own += 1;
+      continue;
+    }
+    // With the sign-off: a closing like 'Thank you for the quote' is a whole
+    // sentence, and a short message can carry most of its language there.
+    if (inAnotherLanguage(parted.body + '\n' + parted.signoff, options.lang)) {
+      counts.dropped.in_another_language += 1;
+      continue;
+    }
+    counts.kept += 1;
+    samples.push(makeSample({
+      ...entry,
+      id: options.tag + '-' + String(counts.kept).padStart(4, '0'),
+      tag: options.tag,
+      body: mask(parted.body),
+      signoff: mask(parted.signoff),
+      signature: mask(parted.signature),
+    }));
+  }
+  return samples;
+}
+
 // One message to one sample, or to the reason it was dropped. A mailbox file
 // and a directory of .emlx files hand over the same bytes and want the same work
 // done on them, so the work is written once here and the two readers below only
 // differ in how they find a message.
 function messageSample(message, context) {
-  const { me, counts, report, options, adapter, source, index } = context;
+  const { me, counts, report, options, adapter, source } = context;
   const { headers, body } = splitMessage(message);
   const from = addressOf(decodeEncodedWords(headers.from));
   if (!from || !me.has(from)) {
@@ -888,18 +1005,16 @@ function messageSample(message, context) {
     .filter((address) => !me.has(address));
   const domain = recipients.length ? recipients[0].split('@')[1] : null;
 
-  return makeSample({
-    id: options.tag + '-' + String(index).padStart(4, '0'),
-    tag: options.tag,
+  return {
     adapter,
     source,
     date,
     recipientDomain: domain,
     extension: '',
-    body: mask(parted.body),
-    signoff: mask(parted.signoff),
-    signature: mask(parted.signature),
-  });
+    body: parted.body,
+    signoff: parted.signoff,
+    signature: parted.signature,
+  };
 }
 
 // A mailbox exported from a mail client: Gmail goes through Takeout,
@@ -910,20 +1025,17 @@ function collectMbox(file, options) {
   const me = new Set((options.me || []).map((address) => address.toLowerCase()));
   const counts = emptyCounts();
   const report = decodeReport();
-  const samples = [];
+  const entries = [];
 
   for (const message of streamMbox(file, options.chunkSize)) {
     counts.read += 1;
-    const sample = messageSample(message, {
-      me, counts, report, options, adapter: 'mbox', source: path.basename(file), index: counts.kept + 1,
+    const entry = messageSample(message, {
+      me, counts, report, options, adapter: 'mbox', source: path.basename(file),
     });
-    if (sample) {
-      counts.kept += 1;
-      samples.push(sample);
-    }
+    if (entry) entries.push(entry);
   }
 
-  return { counts, samples, decoding: decoded(report) };
+  return { counts, samples: finishSamples(entries, options, counts), decoding: decoded(report) };
 }
 
 // Apple Mail keeps every message it has synchronised as a file of its own under
@@ -1071,7 +1183,7 @@ function collectAppleMail(root, options) {
   const me = new Set((options.me || []).map((address) => address.toLowerCase()));
   const counts = emptyCounts();
   const report = decodeReport();
-  const samples = [];
+  const entries = [];
   const seen = new Set();
 
   for (const base of mailRoots(root)) {
@@ -1108,17 +1220,14 @@ function collectAppleMail(root, options) {
         counts.dropped.unreadable += 1;
         continue;
       }
-      const sample = messageSample(message, {
-        me, counts, report, options, adapter: 'applemail', source: mailboxName(file), index: counts.kept + 1,
+      const entry = messageSample(message, {
+        me, counts, report, options, adapter: 'applemail', source: mailboxName(file),
       });
-      if (sample) {
-        counts.kept += 1;
-        samples.push(sample);
-      }
+      if (entry) entries.push(entry);
     }
   }
 
-  return { counts, samples, decoding: decoded(report) };
+  return { counts, samples: finishSamples(entries, options, counts), decoding: decoded(report) };
 }
 
 // Text out of the formats a letter actually gets saved in. Neither conversion is
@@ -1194,6 +1303,58 @@ function walk(directory) {
   return found.sort();
 }
 
+// A model letter, its fields left as <Poste> and <Société> or as a row of dots
+// for a name to go on. Two of them make a form, not something anyone sent. An
+// address in angle brackets is not a field, so the at sign is refused inside one.
+const BLANK_FIELD = /<\p{Lu}[^<>@\n]{0,40}>|\.{5,}|\u2026{3,}|_{5,}/gu;
+const BLANK_FIELDS = 2;
+
+// Where a letter is signed. A letter the user received carries their name too,
+// in the recipient block and on the greeting, so the name that makes a document
+// theirs is the one among its last lines, not the one at its head.
+const AUTHOR_LINES = 12;
+
+// A letter opens on the sender's block, the recipient's, a place, a date and an
+// object line: a layout the same under every letter, which names both parties
+// and says nothing of how the letter is written. The sample starts at the
+// greeting when one stands in the head of the page, otherwise under the object
+// line, and a document with neither is taken whole.
+const LETTER_HEAD = 30;
+const OBJECT_LINE = /^\s*(objet|subject|re|concerne)\s*:/i;
+
+function letterBody(text) {
+  const lines = text.split('\n');
+  const head = lines.slice(0, LETTER_HEAD);
+  const greeting = head.findIndex((line) => /,\s*$/.test(line)
+    && wordCount(line) <= SALUTATION_WORDS && SALUTATION_OPENERS.test(line.trim()));
+  if (greeting !== -1) return lines.slice(greeting).join('\n');
+  const object = head.findIndex((line) => OBJECT_LINE.test(line));
+  if (object === -1) return text;
+  let end = object + 1;
+  while (end < lines.length && lines[end].trim()) end += 1;
+  return lines.slice(end).join('\n').trim() || text;
+}
+
+// The same letter is often saved twice, as the document it was written in and as
+// the PDF that left, and a converter breaks the lines of each its own way. Two
+// letters sharing SAME_LETTER of the runs of words of the shorter one are one
+// letter, and a copy measured twice would count its habits twice.
+const SHINGLE_WORDS = 4;
+const SAME_LETTER = 0.8;
+
+function shinglesOf(text) {
+  const words = String(text).toLowerCase().match(/\p{L}+/gu) || [];
+  return new Set(words.slice(SHINGLE_WORDS - 1)
+    .map((unused, index) => words.slice(index, index + SHINGLE_WORDS).join(' ')));
+}
+
+function sameLetter(a, b) {
+  const [smaller, larger] = a.size <= b.size ? [a, b] : [b, a];
+  if (!smaller.size) return false;
+  const shared = [...smaller].filter((shingle) => larger.has(shingle)).length;
+  return shared / smaller.size >= SAME_LETTER;
+}
+
 // Letters the user corrected by hand: the samples closest to what the user
 // actually approves, which no sent mail quite is. That is said by the adapter
 // name and the tag on each sample, not by a figure: a number nobody can
@@ -1202,7 +1363,8 @@ function walk(directory) {
 function collectFolder(directory, options) {
   const counts = emptyCounts();
   const report = decodeReport();
-  const samples = [];
+  const entries = [];
+  const letters = [];
 
   const missing = new Set();
   const author = (options.author || []).map((name) => name.toLowerCase()).filter(Boolean);
@@ -1249,8 +1411,8 @@ function collectFolder(directory, options) {
     // filename, so the caller names what the user signs with and a document
     // that does not carry it is not theirs.
     if (author.length) {
-      const haystack = text.toLowerCase();
-      if (!author.some((name) => haystack.includes(name))) {
+      const closing = text.split('\n').filter((line) => line.trim()).slice(-AUTHOR_LINES).join('\n').toLowerCase();
+      if (!author.some((name) => closing.includes(name))) {
         counts.dropped.not_from_the_user += 1;
         continue;
       }
@@ -1261,7 +1423,12 @@ function collectFolder(directory, options) {
       continue;
     }
 
-    const parted = splitSignature(stripQuoted(extension === '.tex' ? texToText(text) : text).text);
+    if ((text.match(BLANK_FIELD) || []).length >= BLANK_FIELDS) {
+      counts.dropped.a_blank_template += 1;
+      continue;
+    }
+
+    const parted = splitSignature(stripQuoted(letterBody(extension === '.tex' ? texToText(text) : text)).text);
     if (!wordCount(parted.body)) {
       counts.dropped.nothing_of_their_own += 1;
       continue;
@@ -1277,22 +1444,27 @@ function collectFolder(directory, options) {
       counts.dropped.outside_the_window += 1;
       continue;
     }
-    counts.kept += 1;
-    samples.push(makeSample({
-      id: options.tag + '-' + String(counts.kept).padStart(4, '0'),
-      tag: options.tag,
+    const shingles = shinglesOf(parted.body);
+    if (letters.some((other) => sameLetter(shingles, other))) {
+      counts.dropped.filed_twice += 1;
+      continue;
+    }
+    letters.push(shingles);
+    entries.push({
       adapter: 'folder',
       source: path.relative(directory, file),
       date: stamp ? stamp[1] : null,
       recipientDomain: null,
       extension,
-      body: mask(parted.body),
-      signoff: mask(parted.signoff),
-      signature: mask(parted.signature),
-    }));
+      body: parted.body,
+      signoff: parted.signoff,
+      signature: parted.signature,
+    });
   }
 
-  return { counts, samples, decoding: decoded(report), missing: [...missing].sort() };
+  return {
+    counts, samples: finishSamples(entries, options, counts), decoding: decoded(report), missing: [...missing].sort(),
+  };
 }
 
 // --- Detection --------------------------------------------------------------
@@ -1616,6 +1788,8 @@ function runCli(argv, write, writeError) {
   write(result.counts.kept + ' samples of ' + result.counts.read + ' read, written to ' + options.out
     + (dropped.outside_the_window ? '; ' + dropped.outside_the_window + ' before ' + options.since : '')
     + (dropped.written_by_a_machine ? '; ' + dropped.written_by_a_machine + ' written by a machine' : '')
+    + (dropped.in_another_language ? '; ' + dropped.in_another_language + ' in another language' : '')
+    + (dropped.a_blank_template ? '; ' + dropped.a_blank_template + ' blank templates' : '')
     + (dropped.filed_twice ? '; ' + dropped.filed_twice + ' filed twice' : '')
     + (dropped.unreadable ? '; ' + dropped.unreadable + ' did not decode and were not measured' : ''));
   return 0;
@@ -1629,7 +1803,7 @@ module.exports = {
   texToText, collectMbox, collectFolder, parseArgs, runCli, USAGE, MESSAGE_WORDS,
   messageSample, emlxMessage, emlxFiles, mailRoots, mailboxName, readHead, MAIL_SKIP,
   collectAppleMail, convertToText, resolveSince, detectLines, ROBOTS, CONVERTED,
-  writtenByAMachine, MACHINE_WRITTEN,
+  writtenByAMachine, MACHINE_WRITTEN, inAnotherLanguage, finishSamples, letterBody,
 };
 
 if (require.main === module) {
