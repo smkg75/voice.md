@@ -68,4 +68,12 @@ weigh the Voice traits as unmeasured there, and say so.
 
 A correction the person makes on a draft is not a correction to the draft. It
 belongs in the profile, through its own Updating section, which is what "add
-that to my voice" means.
+that to my voice" means. It goes there when it says something about how the
+person writes, from the first time it shows up, and it stays out when it belongs
+to this recipient or this subject only: a profile that takes in every one-off
+edit applies it to every draft after.
+
+The version the person actually sent is the same kind of correction. When they
+say a draft written here has gone out, read what was sent and compare it with
+the draft, then put what the comparison teaches through the same test and the
+same Updating section.
